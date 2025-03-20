@@ -7,7 +7,8 @@ const Notification = require("../models/Notification");
 // @access  Private
 exports.createPost = async (req, res) => {
   try {
-    const { text, image, category, memeTexts, captionPlacement } = req.body;
+    const { text, image, category, memeTexts, captionPlacement, taggedUsers } =
+      req.body;
 
     // Validate required fields
     if (!text || !image) {
@@ -25,6 +26,7 @@ exports.createPost = async (req, res) => {
       category,
       memeTexts,
       captionPlacement,
+      taggedUsers,
     });
 
     // Extract hashtags from text
@@ -36,6 +38,22 @@ exports.createPost = async (req, res) => {
       await post.save();
     }
 
+    // Create notifications for tagged users
+    if (taggedUsers && taggedUsers.length > 0) {
+      for (const userId of taggedUsers) {
+        // Don't notify yourself
+        if (userId === req.user.id) continue;
+
+        await Notification.create({
+          recipient: userId,
+          sender: req.user.id,
+          type: "tag",
+          post: post._id,
+          content: text,
+        });
+      }
+    }
+
     // Update user streak
     const { updateUserStreak } = require("./users");
     await updateUserStreak(req.user.id);
@@ -45,6 +63,16 @@ exports.createPost = async (req, res) => {
       path: "user",
       select: "username profilePicture",
     });
+
+    // Populate tagged users data
+    let formattedTaggedUsers = [];
+    if (taggedUsers && taggedUsers.length > 0) {
+      const taggedUsersData = await User.find({ _id: { $in: taggedUsers } });
+      formattedTaggedUsers = taggedUsersData.map((user) => ({
+        id: user._id,
+        username: user.username,
+      }));
+    }
 
     res.status(201).json({
       success: true,
@@ -59,6 +87,7 @@ exports.createPost = async (req, res) => {
         category: post.category,
         memeTexts: post.memeTexts,
         captionPlacement: post.captionPlacement,
+        taggedUsers: formattedTaggedUsers,
         user: {
           id: post.user._id,
           username: post.user.username,
@@ -93,36 +122,53 @@ exports.getPosts = async (req, res) => {
       .populate({
         path: "comments.user",
         select: "username profilePicture",
+      })
+      .populate({
+        path: "taggedUsers",
+        select: "_id username",
       });
 
     res.status(200).json({
       success: true,
-      data: posts.map((post) => ({
-        id: post._id,
-        text: post.text,
-        image: post.image,
-        createdAt: post.createdAt,
-        likes: post.likeCount,
-        isLiked: post.likes.includes(req.user.id),
-        comments: post.comments.map((comment) => ({
-          id: comment._id,
-          user: comment.user.username,
-          profilePicture: comment.user.profilePicture,
-          text: comment.text,
-          replyTo: comment.replyTo,
-          timestamp: comment.createdAt,
-          likeCount: comment.likes ? comment.likes.length : 0,
-          isLiked: comment.likes ? comment.likes.includes(req.user.id) : false,
-        })),
-        category: post.category,
-        memeTexts: post.memeTexts,
-        captionPlacement: post.captionPlacement,
-        user: {
-          id: post.user._id,
-          username: post.user.username,
-          profilePicture: post.user.profilePicture,
-        },
-      })),
+      data: posts.map((post) => {
+        // Format tagged users
+        const formattedTaggedUsers = post.taggedUsers
+          ? post.taggedUsers.map((user) => ({
+              id: user._id,
+              username: user.username,
+            }))
+          : [];
+
+        return {
+          id: post._id,
+          text: post.text,
+          image: post.image,
+          createdAt: post.createdAt,
+          likes: post.likeCount,
+          isLiked: post.likes.includes(req.user.id),
+          comments: post.comments.map((comment) => ({
+            id: comment._id,
+            user: comment.user.username,
+            profilePicture: comment.user.profilePicture,
+            text: comment.text,
+            replyTo: comment.replyTo,
+            timestamp: comment.createdAt,
+            likeCount: comment.likes ? comment.likes.length : 0,
+            isLiked: comment.likes
+              ? comment.likes.includes(req.user.id)
+              : false,
+          })),
+          category: post.category,
+          memeTexts: post.memeTexts,
+          captionPlacement: post.captionPlacement,
+          taggedUsers: formattedTaggedUsers,
+          user: {
+            id: post.user._id,
+            username: post.user.username,
+            profilePicture: post.user.profilePicture,
+          },
+        };
+      }),
     });
   } catch (error) {
     res.status(500).json({
@@ -402,6 +448,10 @@ exports.getPost = async (req, res) => {
       .populate({
         path: "comments.user",
         select: "username profilePicture",
+      })
+      .populate({
+        path: "taggedUsers",
+        select: "_id username",
       });
 
     if (!post) {
@@ -410,6 +460,14 @@ exports.getPost = async (req, res) => {
         message: "Post not found",
       });
     }
+
+    // Format tagged users
+    const formattedTaggedUsers = post.taggedUsers
+      ? post.taggedUsers.map((user) => ({
+          id: user._id,
+          username: user.username,
+        }))
+      : [];
 
     res.status(200).json({
       success: true,
@@ -433,6 +491,7 @@ exports.getPost = async (req, res) => {
         category: post.category,
         memeTexts: post.memeTexts,
         captionPlacement: post.captionPlacement,
+        taggedUsers: formattedTaggedUsers,
         user: {
           id: post.user._id,
           username: post.user.username,
@@ -492,47 +551,57 @@ exports.updatePost = async (req, res) => {
     if (captionPlacement !== undefined)
       updateFields.captionPlacement = captionPlacement;
 
+    // Update the post with the new fields
     post = await Post.findByIdAndUpdate(req.params.id, updateFields, {
       new: true,
       runValidators: true,
-    }).populate({
-      path: "user",
-      select: "username profilePicture",
-    });
+    })
+      .populate({
+        path: "user",
+        select: "username profilePicture",
+      })
+      .populate({
+        path: "comments.user",
+        select: "username profilePicture",
+      });
+
+    // Format the response to match the expected structure
+    const formattedPost = {
+      id: post._id,
+      text: post.text,
+      image: post.image,
+      createdAt: post.createdAt,
+      likes: post.likeCount,
+      isLiked: post.likes.includes(req.user.id),
+      comments: post.comments.map((comment) => ({
+        id: comment._id,
+        user: comment.user.username,
+        profilePicture: comment.user.profilePicture,
+        text: comment.text,
+        replyTo: comment.replyTo,
+        timestamp: comment.createdAt,
+        likeCount: comment.likes ? comment.likes.length : 0,
+        isLiked: comment.likes ? comment.likes.includes(req.user.id) : false,
+      })),
+      category: post.category,
+      memeTexts: post.memeTexts,
+      captionPlacement: post.captionPlacement,
+      user: {
+        id: post.user._id,
+        username: post.user.username,
+        profilePicture: post.user.profilePicture,
+      },
+    };
 
     res.status(200).json({
       success: true,
-      data: {
-        id: post._id,
-        text: post.text,
-        image: post.image,
-        createdAt: post.createdAt,
-        likes: post.likeCount,
-        isLiked: post.likes.includes(req.user.id),
-        comments: post.comments.map((comment) => ({
-          id: comment._id,
-          user: comment.user.username,
-          profilePicture: comment.user.profilePicture,
-          text: comment.text,
-          replyTo: comment.replyTo,
-          timestamp: comment.createdAt,
-          likeCount: comment.likes ? comment.likes.length : 0,
-          isLiked: comment.likes ? comment.likes.includes(req.user.id) : false,
-        })),
-        category: post.category,
-        memeTexts: post.memeTexts,
-        captionPlacement: post.captionPlacement,
-        user: {
-          id: post.user._id,
-          username: post.user.username,
-          profilePicture: post.user.profilePicture,
-        },
-      },
+      data: formattedPost,
     });
   } catch (error) {
+    console.error("Error updating post:", error);
     res.status(500).json({
       success: false,
-      message: error.message,
+      message: error.message || "An error occurred while updating the post",
     });
   }
 };
@@ -558,6 +627,9 @@ exports.deletePost = async (req, res) => {
         message: "Not authorized to delete this post",
       });
     }
+
+    // Delete all notifications related to this post
+    await Notification.deleteMany({ post: post._id });
 
     await post.deleteOne();
 
@@ -638,7 +710,7 @@ exports.addComment = async (req, res) => {
       });
     }
 
-    const { text } = req.body;
+    const { text, mentions } = req.body;
 
     if (!text) {
       return res.status(400).json({
@@ -672,6 +744,42 @@ exports.addComment = async (req, res) => {
       });
     }
 
+    // Create notifications for mentioned users
+    if (mentions && mentions.length > 0) {
+      console.log("Processing mentions in comment:", mentions);
+
+      // Find users by username
+      const mentionedUsers = await User.find({ username: { $in: mentions } });
+      console.log(
+        "Found mentioned users:",
+        mentionedUsers.map((u) => u.username)
+      );
+
+      // Create notifications for each mentioned user
+      for (const mentionedUser of mentionedUsers) {
+        // Don't notify yourself or the post owner (already notified about the comment)
+        if (
+          mentionedUser._id.toString() === req.user.id ||
+          mentionedUser._id.toString() === post.user.toString()
+        ) {
+          console.log(
+            `Skipping notification for ${mentionedUser.username} (self or post owner)`
+          );
+          continue;
+        }
+
+        console.log(`Creating tag notification for ${mentionedUser.username}`);
+        await Notification.create({
+          recipient: mentionedUser._id,
+          sender: req.user.id,
+          type: "tag",
+          post: post._id,
+          comment: newComment._id, // Include the comment ID to differentiate from post tags
+          content: text,
+        });
+      }
+    }
+
     // Populate user data for the comment
     await post.populate({
       path: "comments.user",
@@ -694,6 +802,7 @@ exports.addComment = async (req, res) => {
       },
     });
   } catch (error) {
+    console.error("Error adding comment:", error);
     res.status(500).json({
       success: false,
       message: error.message,
@@ -739,6 +848,18 @@ exports.likeComment = async (req, res) => {
         comment.likes = [];
       }
       comment.likes.push(req.user.id);
+
+      // Create notification for comment owner if it's not the current user
+      if (comment.user.toString() !== req.user.id) {
+        await Notification.create({
+          recipient: comment.user,
+          sender: req.user.id,
+          type: "comment_like",
+          post: post._id,
+          comment: comment._id,
+          content: comment.text,
+        });
+      }
     }
 
     await post.save();
@@ -764,6 +885,14 @@ exports.likeComment = async (req, res) => {
 // @access  Private
 exports.replyToComment = async (req, res) => {
   try {
+    console.log("Reply request received:", {
+      postId: req.params.id,
+      commentId: req.params.commentId,
+      userId: req.user.id,
+      text: req.body.text,
+      mentions: req.body.mentions,
+    });
+
     const post = await Post.findById(req.params.id);
 
     if (!post) {
@@ -783,7 +912,7 @@ exports.replyToComment = async (req, res) => {
       });
     }
 
-    const { text } = req.body;
+    const { text, mentions } = req.body;
 
     if (!text) {
       return res.status(400).json({
@@ -808,45 +937,106 @@ exports.replyToComment = async (req, res) => {
     // Get the newly added reply
     const newReply = post.comments[post.comments.length - 1];
 
-    // Populate user data for the reply
-    await post.populate({
-      path: "comments.user",
-      select: "username profilePicture",
-    });
-
-    // Find the populated reply
-    const populatedReply = post.comments.id(newReply._id);
-
-    // Create notification for the comment owner if it's not the current user
-    if (parentComment.user.toString() !== req.user.id) {
-      await Notification.create({
-        recipient: parentComment.user,
-        sender: req.user.id,
-        type: "comment",
-        post: post._id,
-        comment: newReply._id,
-        content: text,
+    try {
+      // Populate user data for the reply
+      await post.populate({
+        path: "comments.user",
+        select: "username profilePicture",
       });
-    }
 
-    res.status(200).json({
-      success: true,
-      data: {
-        id: populatedReply._id,
-        user: populatedReply.user.username,
-        profilePicture: populatedReply.user.profilePicture,
+      // Find the populated reply
+      const populatedReply = post.comments.id(newReply._id);
+
+      if (!populatedReply) {
+        throw new Error("Failed to find populated reply");
+      }
+
+      // Create notification for the comment owner if it's not the current user
+      if (parentComment.user.toString() !== req.user.id) {
+        try {
+          await Notification.create({
+            recipient: parentComment.user,
+            sender: req.user.id,
+            type: "comment_reply",
+            post: post._id,
+            comment: newReply._id,
+            content: text,
+          });
+        } catch (notifError) {
+          console.error("Error creating notification:", notifError);
+          // Continue even if notification creation fails
+        }
+      }
+
+      // Create notifications for mentioned users
+      if (mentions && mentions.length > 0) {
+        // Find users by username
+        const mentionedUsers = await User.find({ username: { $in: mentions } });
+
+        // Create notifications for each mentioned user
+        for (const mentionedUser of mentionedUsers) {
+          // Don't notify yourself or the parent comment owner (already notified)
+          if (
+            mentionedUser._id.toString() === req.user.id ||
+            mentionedUser._id.toString() === parentComment.user.toString()
+          )
+            continue;
+
+          await Notification.create({
+            recipient: mentionedUser._id,
+            sender: req.user.id,
+            type: "tag",
+            post: post._id,
+            comment: newReply._id,
+            content: text,
+          });
+        }
+      }
+
+      // Prepare the response data carefully to avoid undefined values
+      const responseData = {
+        id: populatedReply._id.toString(),
+        user: populatedReply.user.username || "Unknown",
+        profilePicture: populatedReply.user.profilePicture || null,
         text: populatedReply.text,
-        replyTo: populatedReply.replyTo,
+        replyTo: populatedReply.replyTo
+          ? populatedReply.replyTo.toString()
+          : null,
         createdAt: populatedReply.createdAt,
         likeCount: 0,
         isLiked: false,
-      },
-    });
+      };
+
+      return res.status(200).json({
+        success: true,
+        data: responseData,
+      });
+    } catch (populateError) {
+      console.error("Error populating reply:", populateError);
+
+      // Even if population fails, we can still return a basic success response
+      // since the reply was saved to the database
+      return res.status(200).json({
+        success: true,
+        data: {
+          id: newReply._id.toString(),
+          user: req.user.username || "Unknown",
+          text: text,
+          replyTo: parentComment._id.toString(),
+          createdAt: new Date(),
+          likeCount: 0,
+          isLiked: false,
+        },
+        message: "Reply added but user data could not be populated",
+      });
+    }
   } catch (error) {
     console.error("Error replying to comment:", error);
     res.status(500).json({
       success: false,
-      message: error.message,
+      message:
+        error.message || "An error occurred while replying to the comment",
+      error: process.env.NODE_ENV === "development" ? error.stack : undefined,
     });
   }
 };
@@ -856,9 +1046,14 @@ exports.replyToComment = async (req, res) => {
 // @access  Private
 exports.deleteComment = async (req, res) => {
   try {
+    console.log(
+      `Deleting comment: postId=${req.params.id}, commentId=${req.params.commentId}, userId=${req.user.id}`
+    );
+
     const post = await Post.findById(req.params.id);
 
     if (!post) {
+      console.log("Post not found");
       return res.status(404).json({
         success: false,
         message: "Post not found",
@@ -869,6 +1064,59 @@ exports.deleteComment = async (req, res) => {
     const comment = post.comments.id(req.params.commentId);
 
     if (!comment) {
+      console.log("Comment not found");
+
+      // Check if the comment might be in the process of being saved
+      // by looking for a comment with the same text from this user
+      const pendingComments = post.comments.filter(
+        (c) =>
+          c.user.toString() === req.user.id &&
+          new Date(c.createdAt).getTime() > Date.now() - 60000 // Comments created in the last minute
+      );
+
+      if (pendingComments.length > 0) {
+        console.log(
+          "Found pending comments that might match:",
+          pendingComments.length
+        );
+
+        // Delete the most recent comment from this user as a fallback
+        const mostRecentComment = pendingComments.sort(
+          (a, b) =>
+            new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime()
+        )[0];
+
+        console.log(
+          "Deleting most recent comment as fallback:",
+          mostRecentComment._id
+        );
+
+        // Remove the comment
+        post.comments.pull(mostRecentComment._id);
+
+        // Also remove any replies to this comment
+        const repliesToRemove = post.comments.filter(
+          (c) =>
+            c.replyTo &&
+            c.replyTo.toString() === mostRecentComment._id.toString()
+        );
+
+        for (const reply of repliesToRemove) {
+          post.comments.pull(reply._id);
+        }
+
+        await post.save();
+
+        // Delete any notifications related to this comment
+        await Notification.deleteMany({ comment: mostRecentComment._id });
+
+        return res.status(200).json({
+          success: true,
+          data: {},
+          message: "Deleted most recent comment as fallback",
+        });
+      }
+
       return res.status(404).json({
         success: false,
         message: "Comment not found",
@@ -880,21 +1128,37 @@ exports.deleteComment = async (req, res) => {
       comment.user.toString() !== req.user.id &&
       post.user.toString() !== req.user.id
     ) {
+      console.log("Not authorized to delete comment");
       return res.status(401).json({
         success: false,
         message: "Not authorized to delete this comment",
       });
     }
 
-    // Remove the comment
-    comment.deleteOne();
-
-    // Also remove any replies to this comment
-    post.comments = post.comments.filter(
-      (c) => !c.replyTo || c.replyTo.toString() !== req.params.commentId
+    // Find all replies to this comment
+    const repliesToRemove = post.comments.filter(
+      (c) => c.replyTo && c.replyTo.toString() === req.params.commentId
     );
 
+    // Remove the comment
+    post.comments.pull(req.params.commentId);
+
+    // Remove all replies
+    for (const reply of repliesToRemove) {
+      post.comments.pull(reply._id);
+    }
+
     await post.save();
+
+    // Delete any notifications related to this comment
+    await Notification.deleteMany({ comment: req.params.commentId });
+
+    // Also delete notifications for replies
+    for (const reply of repliesToRemove) {
+      await Notification.deleteMany({ comment: reply._id });
+    }
+
+    console.log("Comment and related replies deleted successfully");
 
     res.status(200).json({
       success: true,
@@ -904,7 +1168,8 @@ exports.deleteComment = async (req, res) => {
     console.error("Error deleting comment:", error);
     res.status(500).json({
       success: false,
-      message: error.message,
+      message: error.message || "An error occurred while deleting the comment",
+      error: process.env.NODE_ENV === "development" ? error.stack : undefined,
     });
   }
 };

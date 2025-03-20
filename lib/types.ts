@@ -58,6 +58,7 @@ export interface Post {
   category?: string;
   memeTexts?: MemeText[];
   captionPlacement?: "on-image" | "whitespace";
+  taggedUsers?: Array<{ id: string; username: string }>;
 }
 
 export interface SharedPost {
@@ -98,7 +99,13 @@ export interface Message {
 
 export interface Notification {
   id: string;
-  type: "like" | "comment" | "follow";
+  type:
+    | "like"
+    | "comment"
+    | "follow"
+    | "tag"
+    | "comment_like"
+    | "comment_reply";
   user: {
     id: string;
     username: string;
@@ -107,6 +114,8 @@ export interface Notification {
   content?: string;
   postId?: string;
   postText?: string;
+  commentId?: string;
   read?: boolean;
   timestamp: string;
+  userFollowedBack?: boolean;
 }

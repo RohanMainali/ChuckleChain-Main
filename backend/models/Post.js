@@ -1,3 +1,4 @@
+// Update the Post schema to include taggedUsers
 const mongoose = require("mongoose");
 
 const MemeTextSchema = new mongoose.Schema({
@@ -96,6 +97,12 @@ const PostSchema = new mongoose.Schema(
     ],
     comments: [CommentSchema],
     hashtags: [String],
+    taggedUsers: [
+      {
+        type: mongoose.Schema.Types.ObjectId,
+        ref: "User",
+      },
+    ],
     createdAt: {
       type: Date,
       default: Date.now,
@@ -115,6 +122,26 @@ PostSchema.virtual("likeCount").get(function () {
 // Virtual for comment count
 PostSchema.virtual("commentCount").get(function () {
   return this.comments.length;
+});
+
+// Add a pre-save hook to ensure all comments have valid user references
+// Add this near the end of the file, before the model export
+PostSchema.pre("save", async function (next) {
+  try {
+    // Check if any comments have invalid user references
+    for (const comment of this.comments) {
+      if (!comment.user) {
+        console.warn(
+          "Found comment without user reference, setting to system user"
+        );
+        // You could set this to a system user ID or handle it differently
+        comment.user = this.user; // Default to post owner as fallback
+      }
+    }
+    next();
+  } catch (error) {
+    next(error);
+  }
 });
 
 module.exports = mongoose.model("Post", PostSchema);

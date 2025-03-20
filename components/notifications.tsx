@@ -1,7 +1,5 @@
 "use client";
 
-// Update the Notifications component to handle pagination and optimize rendering
-
 import { useRef, useState, useEffect } from "react";
 import { formatDistanceToNow } from "date-fns";
 import { useRouter } from "next/navigation";
@@ -10,10 +8,17 @@ import { Button } from "@/components/ui/button";
 import { Card, CardContent } from "@/components/ui/card";
 import { ScrollArea } from "@/components/ui/scroll-area";
 import type { Notification } from "@/lib/types";
-import { Heart, MessageCircle, UserPlus, RefreshCw } from "lucide-react";
+import {
+  Heart,
+  MessageCircle,
+  UserPlus,
+  RefreshCw,
+  AtSign,
+} from "lucide-react";
 import axios from "axios";
 import io from "socket.io-client";
 import { useAuth } from "@/components/auth-provider";
+import { toast } from "@/hooks/use-toast";
 
 // Initialize socket connection
 let socket: any;
@@ -29,75 +34,139 @@ export function Notifications() {
   const [error, setError] = useState<string | null>(null);
   const socketInitialized = useRef(false);
   const ITEMS_PER_PAGE = 20;
+  const retryCount = useRef(0);
+  const maxRetries = 3;
 
   // Initialize socket connection
   useEffect(() => {
     if (user && !socketInitialized.current) {
       console.log("Initializing socket connection for notifications");
 
-      // Connect to the socket server with auth token
-      const token = document.cookie.split("token=")[1]?.split(";")[0];
-      socket = io(process.env.NEXT_PUBLIC_API_URL || "http://localhost:5001", {
-        withCredentials: true,
-        auth: { token },
-      });
+      try {
+        // Connect to the socket server with auth token
+        const token = document.cookie.split("token=")[1]?.split(";")[0];
+        const apiUrl =
+          process.env.NEXT_PUBLIC_API_URL || "http://localhost:5001";
+        console.log("Connecting to socket server at:", apiUrl);
 
-      // Store socket in window for global access
-      if (typeof window !== "undefined") {
-        (window as any).socket = socket;
+        socket = io(apiUrl, {
+          withCredentials: true,
+          auth: { token },
+          reconnection: true,
+          reconnectionAttempts: 5,
+          reconnectionDelay: 1000,
+          timeout: 10000,
+        });
+
+        // Store socket in window for global access
+        if (typeof window !== "undefined") {
+          (window as any).socket = socket;
+        }
+
+        // Socket event handlers
+        socket.on("connect", () => {
+          console.log("Socket connected successfully with ID:", socket.id);
+        });
+
+        socket.on("connect_error", (error) => {
+          console.error("Socket connection error:", error);
+          // Don't set error state for socket connection issues
+          // as it's not critical for the notifications page to work
+        });
+
+        socket.on("error", (error) => {
+          console.error("Socket error:", error);
+        });
+
+        socket.on("newNotification", (notification: Notification) => {
+          console.log("New notification received:", notification);
+          setNotifications((prev) => [notification, ...prev]);
+        });
+
+        socketInitialized.current = true;
+
+        // Clean up on unmount
+        return () => {
+          console.log("Disconnecting socket");
+          socket.disconnect();
+          socketInitialized.current = false;
+        };
+      } catch (err) {
+        console.error("Error setting up socket:", err);
+        // Don't block the UI for socket errors
       }
-
-      // Socket event handlers
-      socket.on("connect", () => {
-        console.log("Socket connected successfully with ID:", socket.id);
-      });
-
-      socket.on("connect_error", (error) => {
-        console.error("Socket connection error:", error);
-      });
-
-      socket.on("newNotification", (notification: Notification) => {
-        console.log("New notification received:", notification);
-        setNotifications((prev) => [notification, ...prev]);
-      });
-
-      socketInitialized.current = true;
-
-      // Clean up on unmount
-      return () => {
-        console.log("Disconnecting socket");
-        socket.disconnect();
-        socketInitialized.current = false;
-      };
     }
   }, [user]);
 
-  // Fetch notifications with pagination
+  // Fetch notifications with pagination and retry logic
   const fetchNotifications = async (pageNum = 1, append = false) => {
     try {
       setLoading(pageNum === 1);
       setLoadingMore(pageNum > 1);
       setError(null);
 
+      console.log(
+        `Fetching notifications page ${pageNum} from ${process.env.NEXT_PUBLIC_API_URL}/api/notifications`
+      );
+
       const { data } = await axios.get(
-        `/api/notifications?page=${pageNum}&limit=${ITEMS_PER_PAGE}`
+        `/api/notifications?page=${pageNum}&limit=${ITEMS_PER_PAGE}`,
+        {
+          timeout: 10000, // 10 second timeout
+        }
       );
 
       if (data.success) {
+        // Reset retry count on success
+        retryCount.current = 0;
+
         if (append) {
           setNotifications((prev) => [...prev, ...data.data]);
         } else {
-          setNotifications(data.data);
+          setNotifications(data.data || []);
         }
 
         // Check if there are more notifications to load
         setHasMore(data.data.length === ITEMS_PER_PAGE);
       } else {
-        setError("Failed to load notifications");
+        setError(
+          "Failed to load notifications: " + (data.message || "Unknown error")
+        );
       }
     } catch (error) {
       console.error("Error fetching notifications:", error);
-      setError("An error occurred while loading notifications");
+      let errorMessage = "An error occurred while loading notifications";
+
+      if (error.response) {
+        // The request was made and the server responded with a status code
+        // that falls out of the range of 2xx
+        errorMessage = `Server error: ${error.response.status} - ${
+          error.response.data?.message || error.message
+        }`;
+        console.error("Response data:", error.response.data);
+      } else if (error.request) {
+        // The request was made but no response was received
+        errorMessage = "No response from server. Please check your connection.";
+      }
+
+      setError(errorMessage);
+
+      // Auto-retry logic for network errors
+      if (retryCount.current < maxRetries) {
+        retryCount.current++;
+        const delay = retryCount.current * 2000; // Exponential backoff
+        toast({
+          title: "Connection issue",
+          description: `Retrying in ${delay / 1000} seconds... (${
+            retryCount.current
+          }/${maxRetries})`,
+          variant: "destructive",
+        });
+
+        setTimeout(() => {
+          fetchNotifications(pageNum, append);
+        }, delay);
+      }
     } finally {
       setLoading(false);
       setLoadingMore(false);
@@ -136,6 +205,11 @@ export function Notifications() {
       );
     } catch (error) {
       console.error("Error marking all notifications as read:", error);
+      toast({
+        title: "Error",
+        description: "Failed to mark notifications as read",
+        variant: "destructive",
+      });
     }
   };
 
@@ -171,6 +245,55 @@ export function Notifications() {
       }
     } else if (notification.type === "follow") {
       router.push(`/profile/${notification.user.username}`);
+    } else if (notification.type === "tag") {
+      if (notification.postId) {
+        router.push(`/post/${notification.postId}`);
+      }
+    } else if (
+      notification.type === "comment_like" ||
+      notification.type === "comment_reply"
+    ) {
+      if (notification.postId) {
+        router.push(`/post/${notification.postId}`);
+      }
+    }
+  };
+
+  // Handle follow back action
+  const handleFollowBack = async (userId: string, notificationId: string) => {
+    try {
+      // Get the username from the notification
+      const notification = notifications.find((n) => n.id === notificationId);
+      if (!notification) return;
+
+      const username = notification.user.username;
+
+      // Call the follow API
+      const { data } = await axios.put(`/api/users/${username}/follow`);
+
+      if (data.success) {
+        toast({
+          title: "Success",
+          description: `You are now following ${username}`,
+        });
+
+        // Mark notification as read
+        handleMarkAsRead(notificationId);
+
+        // Update the notification to show followed status
+        setNotifications((prev) =>
+          prev.map((n) =>
+            n.id === notificationId ? { ...n, userFollowedBack: true } : n
+          )
+        );
+      }
+    } catch (error) {
+      console.error("Error following user:", error);
+      toast({
+        title: "Error",
+        description: "Failed to follow user. Please try again.",
+        variant: "destructive",
+      });
     }
   };
 
@@ -186,11 +309,20 @@ export function Notifications() {
         return (
           <UserPlus className="h-4 w-4 text-green-500 animate-slide-right" />
         );
+      case "tag":
+        return <AtSign className="h-4 w-4 text-purple-500 animate-slide-up" />;
+      case "comment_like":
+        return <Heart className="h-4 w-4 text-pink-500 animate-pulse-once" />;
+      case "comment_reply":
+        return (
+          <MessageCircle className="h-4 w-4 text-indigo-500 animate-slide-up" />
+        );
       default:
         return null;
     }
   };
 
+  // Update the getNotificationText function to specify when a user is tagged in a comment
   const getNotificationText = (notification: Notification) => {
     switch (notification.type) {
       case "like":
@@ -212,6 +344,41 @@ export function Notifications() {
           <>
             <span className="font-semibold">{notification.user.username}</span>{" "}
             started following you
+          </>
+        );
+      case "tag":
+        // Check if this is a tag in a comment or in a post
+        if (notification.comment) {
+          return (
+            <>
+              <span className="font-semibold">
+                {notification.user.username}
+              </span>{" "}
+              mentioned you in a comment: "{notification.content}"
+            </>
+          );
+        } else {
+          return (
+            <>
+              <span className="font-semibold">
+                {notification.user.username}
+              </span>{" "}
+              tagged you in a post
+            </>
+          );
+        }
+      case "comment_like":
+        return (
+          <>
+            <span className="font-semibold">{notification.user.username}</span>{" "}
+            liked your comment: "{notification.content}"
+          </>
+        );
+      case "comment_reply":
+        return (
+          <>
+            <span className="font-semibold">{notification.user.username}</span>{" "}
+            replied to your comment: "{notification.content}"
           </>
         );
       default:
@@ -308,18 +475,31 @@ export function Notifications() {
                       </div>
                     </div>
 
-                    {notification.type === "follow" && (
-                      <Button
-                        variant="outline"
-                        size="sm"
-                        onClick={(e) => {
-                          e.stopPropagation();
-                          router.push(`/profile/${notification.user.username}`);
-                        }}
-                      >
-                        View Profile
-                      </Button>
-                    )}
+                    {notification.type === "follow" &&
+                      !notification.userFollowedBack && (
+                        <Button
+                          variant="outline"
+                          size="sm"
+                          onClick={(e) => {
+                            e.stopPropagation();
+                            handleFollowBack(
+                              notification.user.id,
+                              notification.id
+                            );
+                          }}
+                          className="bg-primary text-primary-foreground hover:bg-primary/90"
+                        >
+                          <UserPlus className="mr-2 h-4 w-4" />
+                          Follow Back
+                        </Button>
+                      )}
+
+                    {notification.type === "follow" &&
+                      notification.userFollowedBack && (
+                        <Button variant="outline" size="sm" disabled>
+                          Following
+                        </Button>
+                      )}
                   </div>
                 ))}
 
