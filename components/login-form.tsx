@@ -2,7 +2,7 @@
 
 import type React from "react"
 
-import { useState } from "react"
+import { useState, useEffect } from "react"
 import { useRouter } from "next/navigation"
 import Link from "next/link"
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs"
@@ -17,6 +17,11 @@ export function LoginForm() {
   const router = useRouter()
   const { login, signup } = useAuth()
   const [isLoading, setIsLoading] = useState(false)
+  const [isClient, setIsClient] = useState(false)
+
+  useEffect(() => {
+    setIsClient(true)
+  }, [])
 
   // Login form state
   const [loginData, setLoginData] = useState({
@@ -47,6 +52,7 @@ export function LoginForm() {
         setErrors({ login: "Invalid username or password" })
       }
     } catch (error) {
+      console.error("Login error:", error)
       setErrors({ login: "An error occurred during login" })
     } finally {
       setIsLoading(false)
@@ -204,4 +210,3 @@ export function LoginForm() {
     </Card>
   )
 }
-

@@ -14,6 +14,7 @@ type AuthContextType = {
   user: User | null
   login: (username: string, password: string) => Promise<boolean>
   signup: (username: string, email: string, password: string) => Promise<boolean>
+  adminSignup: (username: string, email: string, password: string, adminToken: string) => Promise<boolean>
   logout: () => void
   isLoading: boolean
   updateUser: (updates: Partial<User>) => void
@@ -28,6 +29,12 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
   useEffect(() => {
     // Check if user is logged in
     const checkAuth = async () => {
+      // Only run on client side
+      if (typeof window === "undefined") {
+        setIsLoading(false)
+        return
+      }
+
       try {
         const { data } = await axios.get("/api/auth/me")
         if (data.success) {
@@ -37,6 +44,7 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
             profilePicture: data.data.profilePicture,
             email: data.data.email,
             bio: data.data.bio,
+            role: data.data.role,
           })
         }
       } catch (error) {
@@ -53,7 +61,10 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
   const login = async (username: string, password: string) => {
     setIsLoading(true)
     try {
-      const { data } = await axios.post("/api/auth/login", { username, password })
+      const { data } = await axios.post("/api/auth/login", {
+        username,
+        password,
+      })
 
       if (data.success) {
         setUser({
@@ -62,6 +73,7 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
           profilePicture: data.data.profilePicture,
           email: data.data.email,
           bio: data.data.bio,
+          role: data.data.role,
         })
         return true
       }
@@ -77,7 +89,11 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
   const signup = async (username: string, email: string, password: string) => {
     setIsLoading(true)
     try {
-      const { data } = await axios.post("/api/auth/signup", { username, email, password })
+      const { data } = await axios.post("/api/auth/signup", {
+        username,
+        email,
+        password,
+      })
 
       if (data.success) {
         setUser({
@@ -86,12 +102,43 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
           profilePicture: data.data.profilePicture,
           email: data.data.email,
           bio: data.data.bio,
+          role: data.data.role,
         })
         return true
       }
       return false
     } catch (error) {
       console.error("Signup error:", error)
+      return false
+    } finally {
+      setIsLoading(false)
+    }
+  }
+
+  const adminSignup = async (username: string, email: string, password: string, adminToken: string) => {
+    setIsLoading(true)
+    try {
+      const { data } = await axios.post("/api/auth/admin-signup", {
+        username,
+        email,
+        password,
+        adminToken,
+      })
+
+      if (data.success) {
+        setUser({
+          id: data.data._id,
+          username: data.data.username,
+          profilePicture: data.data.profilePicture,
+          email: data.data.email,
+          bio: data.data.bio,
+          role: data.data.role,
+        })
+        return true
+      }
+      return false
+    } catch (error) {
+      console.error("Admin signup error:", error)
       return false
     } finally {
       setIsLoading(false)
@@ -124,7 +171,7 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
   }
 
   return (
-    <AuthContext.Provider value={{ user, login, signup, logout, isLoading, updateUser }}>
+    <AuthContext.Provider value={{ user, login, signup, adminSignup, logout, isLoading, updateUser }}>
       {children}
     </AuthContext.Provider>
   )
@@ -137,4 +184,3 @@ export function useAuth() {
   }
   return context
 }
-

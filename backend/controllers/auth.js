@@ -34,6 +34,41 @@ exports.signup = async (req, res) => {
   }
 }
 
+// @desc    Register admin user
+// @route   POST /api/auth/admin-signup
+// @access  Private (requires admin token)
+exports.adminSignup = async (req, res) => {
+  try {
+    const { username, email, password } = req.body
+
+    // Check if user already exists
+    const userExists = await User.findOne({ $or: [{ email }, { username }] })
+
+    if (userExists) {
+      return res.status(400).json({
+        success: false,
+        message: userExists.email === email ? "Email already in use" : "Username already taken",
+      })
+    }
+
+    // Create admin user
+    const user = await User.create({
+      username,
+      email,
+      password,
+      role: "admin",
+    })
+
+    // Send token response
+    sendTokenResponse(user, 201, res)
+  } catch (error) {
+    res.status(500).json({
+      success: false,
+      message: error.message,
+    })
+  }
+}
+
 // @desc    Login user
 // @route   POST /api/auth/login
 // @access  Public
